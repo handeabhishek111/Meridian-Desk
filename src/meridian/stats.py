@@ -50,6 +50,8 @@ class PairedResult:
     ci_high: float
     p_value: float
     better: str  # "A", "B" or "inconclusive"
+    iters: int = 0  # bootstrap resamples used
+    t_ci: tuple[float, float] = (0.0, 0.0)  # normal-approximation cross-check
 
     def line(self, label: str) -> str:
         return (
@@ -59,21 +61,54 @@ class PairedResult:
         )
 
 
-def _bootstrap_ci(diffs: Sequence[float], iters: int = 20000, seed: int = 20261009,
+#: Cap on bootstrap resampling work (iterations x observations). The cost is
+#: O(iters * n), so a fixed iteration count makes a full-universe backtest
+#: (~32k pairs) take minutes per test. Trading iterations for sample size is
+#: safe: Monte Carlo error falls with iterations, but so does the width of the
+#: interval being estimated, and at large n the interval is tight enough that
+#: 2000 resamples place its endpoints far more precisely than the data justify.
+_BOOTSTRAP_BUDGET = 40_000_000
+_BOOTSTRAP_MIN_ITERS = 2_000
+_BOOTSTRAP_MAX_ITERS = 20_000
+
+
+def bootstrap_iters(n: int) -> int:
+    """Resamples to use for a sample of n paired observations."""
+    if n <= 0:
+        return _BOOTSTRAP_MIN_ITERS
+    return max(_BOOTSTRAP_MIN_ITERS, min(_BOOTSTRAP_MAX_ITERS, _BOOTSTRAP_BUDGET // n))
+
+
+def _bootstrap_ci(diffs: Sequence[float], iters: int | None = None, seed: int = 20261009,
                   alpha: float = 0.05) -> tuple[float, float]:
     """Percentile bootstrap on the mean difference.
 
-    Seeded so the published interval is reproducible from the logs.
+    Seeded, so the published interval is reproducible from the logs.
     """
-    rng = random.Random(seed)
     n = len(diffs)
-    means = []
-    for _ in range(iters):
-        means.append(sum(diffs[rng.randrange(n)] for _ in range(n)) / n)
-    means.sort()
+    if n == 0:
+        return 0.0, 0.0
+    iters = bootstrap_iters(n) if iters is None else iters
+    rng = random.Random(seed)
+    pool = list(diffs)
+    # random.choices resamples in C, which is about four times faster than a
+    # Python loop over randrange and matches a vectorised numpy equivalent.
+    means = sorted(sum(rng.choices(pool, k=n)) / n for _ in range(iters))
     lo = means[int(alpha / 2 * iters)]
     hi = means[min(iters - 1, int((1 - alpha / 2) * iters))]
     return lo, hi
+
+
+def _t_ci(diffs: Sequence[float], alpha: float = 0.05) -> tuple[float, float]:
+    """Normal-approximation interval, reported alongside the bootstrap as a
+    cross-check: the two should agree closely once n is in the hundreds."""
+    n = len(diffs)
+    if n < 2:
+        return 0.0, 0.0
+    m = sum(diffs) / n
+    var = sum((x - m) ** 2 for x in diffs) / (n - 1)
+    half = 1.959964 * math.sqrt(var / n)
+    return m - half, m + half
 
 
 def _t_p_value(diffs: Sequence[float]) -> float:
@@ -121,6 +156,8 @@ def paired_loss(
         ci_high=hi,
         p_value=p,
         better=better,
+        iters=bootstrap_iters(len(diffs)),
+        t_ci=_t_ci(diffs),
     )
 
 

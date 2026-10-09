@@ -111,6 +111,33 @@ will separate the arms on the backtest, and `inconclusive` on the 15 live
 sessions alone. `neither` is a live possibility and worth taking seriously,
 since on the synthetic data the no-signal baseline currently beats both arms.
 
+## Timing: what each stage costs
+
+Measured on sample data in this container; the live figures depend on your
+network and machine.
+
+| Step | Cost |
+|---|---|
+| Arm compute | 0.2 ms per symbol per arm. All four arms over 50 symbols: 32 ms |
+| Daily run, 4 arms in parallel | under 1 s excluding network |
+| `prepare`, live, 50 symbols | the only real cost: 2 HTTPS round trips per symbol, fetched 8-way concurrent |
+| `report` on 880 pairs | 4 s |
+| Backtest, 650 sessions x 50 symbols | hours, dominated by network; a one-off, run it overnight |
+
+The arms are not the bottleneck and never will be; the fetches are. `prepare`
+fetches concurrently (`--workers`, default 8), which on a 50-symbol universe at
+0.4 s per fetch is 2.8 s instead of 20 s. Use `--workers 1` if a provider starts
+rate-limiting.
+
+Two things worth knowing:
+
+- **Widening from 10 to 50 symbols adds no meaningful delay to the daily run**,
+  because the extra fetches happen concurrently and the arm compute is noise.
+- **The backtest is slow but off the critical path.** It runs once, offline, and
+  caches every fact sheet it freezes, so re-running the arms over an existing
+  backtest needs no network at all. Re-scoring after an arm change is minutes,
+  not hours.
+
 ## Open questions for you
 
 1. **Universe.** `config/symbols.json` has 10 symbols. NIFTY 50 costs nothing

@@ -23,6 +23,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from .arms import ARMS, CONTENDERS, read_log, write_log
@@ -54,20 +55,44 @@ def _arms_to_run(args) -> list[str]:
 
 
 def cmd_prepare(args) -> int:
+    from concurrent.futures import ThreadPoolExecutor
     from .providers import get_provider  # only the pipeline imports providers
 
     store, _, _ = _paths(args.data)
     provider = get_provider(args.provider)
     symbols = _symbols(args)
-    frozen = 0
-    for sym in symbols:
+
+    # Each symbol costs two sequential HTTPS round trips against a live
+    # provider, which dominates everything else in the daily run and has to
+    # finish before the open. Symbols are independent and each writes its own
+    # file, so they fetch concurrently. The worker count is kept modest to stay
+    # polite to the provider rather than to go as fast as possible.
+    workers = max(1, min(args.workers, len(symbols)))
+
+    def fetch(sym: str) -> tuple[str, str | None, str | None]:
         try:
-            fp = store.put(provider.fact_sheet(args.session, sym))
+            return sym, store.put(provider.fact_sheet(args.session, sym)), None
+        except Exception as e:  # a symbol with no data is simply not traded
+            return sym, None, str(e)
+
+    started = time.perf_counter()
+    if workers == 1:
+        results = [fetch(s) for s in symbols]
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(fetch, symbols))
+
+    frozen = 0
+    for sym, fp, err in results:  # reported in symbol order, not completion order
+        if err is not None:
+            print(f"FAILED {sym:<32} {err}", file=sys.stderr)
+        else:
             frozen += 1
             if not getattr(args, "quiet", False):
                 print(f"frozen {sym:<32} {fp[:12]}")
-        except Exception as e:  # a symbol with no data is simply not traded
-            print(f"FAILED {sym:<32} {e}", file=sys.stderr)
+    if not getattr(args, "quiet", False):
+        print(f"{frozen}/{len(symbols)} sheets frozen in "
+              f"{time.perf_counter() - started:.1f}s with {workers} worker(s)")
     if frozen == 0:
         print(f"No fact sheets frozen for {args.session}.", file=sys.stderr)
         return 1
@@ -282,6 +307,8 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--provider", default="sample", choices=["sample", "live"])
         p.add_argument("--symbols", nargs="*")
         p.add_argument("--symbols-file", default=str(DEFAULT_SYMBOLS))
+        p.add_argument("--workers", type=int, default=8,
+                       help="concurrent provider fetches in prepare (1 disables)")
 
     for name in ("prepare", "outcomes"):
         p = sub.add_parser(name)
