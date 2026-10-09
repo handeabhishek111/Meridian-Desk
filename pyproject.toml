@@ -1,0 +1,9 @@
+[project]
+name = "meridian-desk"
+version = "0.1.0"
+description = "Multi-agent committee advisor for Indian equities and Polymarket, with an A/B trial harness"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
