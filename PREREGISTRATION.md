@@ -115,3 +115,26 @@ sample, not a weaker substitute for it.
   because they do not change what an arm would predict from a given sheet.
 - Amendments to this document are appended with a date and a reason. Nothing
   above is edited in place once a live session has been scored.
+
+## Log
+
+- 2026-10-11 — Provider fix (allowed above; arms unchanged).
+  `YahooProvider._daily` now anchors its six-month window to the session date
+  (`period1`/`period2`) instead of fetching the six months up to now. Before
+  the fix, a session more than six months in the past returned zero bars, so
+  the 2024-01-01 to 2025-06-30 backtest would have frozen 0 of its sessions.
+  Sheets for sessions within the last ~3 months are identical under both
+  windows; older sessions now get the full 60-bar lookback for the first time.
+- 2026-10-11 — Provider fix (arms unchanged). The Yahoo news search has no
+  historical archive, so `fact_sheet` now leaves `headlines` empty for
+  sessions older than 2 days instead of attaching today's news to a past
+  session, which would have been look-ahead in the backtest. The arms' news
+  desks abstain on an empty list, so the backtest scores them without a news
+  input; the 15-session live trial is unaffected. The already-frozen
+  2026-10-09 sheets keep their headlines.
+- 2026-10-12 — Provider fix (arms unchanged). The Yahoo news search indexes
+  plain tickers, so `fact_sheet` now queries it with the exchange suffix
+  stripped (`RELIANCE` instead of `RELIANCE.NS`); the suffixed form returned
+  zero items. Applies to sessions prepared after the fix. The already-frozen
+  2026-10-09 and 2026-10-12 sheets keep their empty headline lists, so all
+  arms abstain on news symmetrically for those sessions.

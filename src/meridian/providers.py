@@ -125,12 +125,19 @@ class YahooProvider:
         self.lookback = lookback
 
     def _daily(self, symbol: str, until: dt.date):
-        q = urllib.parse.urlencode({"range": "6mo", "interval": "1d"})
+        # Anchor the window to `until`, not to now: a backtest session a year
+        # ago must see the six months before it, not the last six months.
+        ist = dt.timezone(dt.timedelta(hours=5, minutes=30))
+        end = dt.datetime.combine(until, dt.time(23, 59, 59), ist)
+        q = urllib.parse.urlencode({
+            "period1": int((end - dt.timedelta(days=183)).timestamp()),
+            "period2": int(end.timestamp()),
+            "interval": "1d",
+        })
         data = _get_json(f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?{q}")
         res = data["chart"]["result"][0]
         ts = res["timestamp"]
         quote = res["indicators"]["quote"][0]
-        ist = dt.timezone(dt.timedelta(hours=5, minutes=30))
         rows = []
         for t, c, v in zip(ts, quote["close"], quote["volume"]):
             if c is None:
@@ -140,7 +147,9 @@ class YahooProvider:
 
     def _headlines(self, symbol: str) -> tuple[str, ...]:
         try:
-            q = urllib.parse.urlencode({"q": symbol, "newsCount": 8, "quotesCount": 0})
+            # The news search indexes plain tickers; "RELIANCE.NS" returns
+            # nothing while "RELIANCE" returns news.
+            q = urllib.parse.urlencode({"q": symbol.split(".")[0], "newsCount": 8, "quotesCount": 0})
             data = _get_json(f"https://query1.finance.yahoo.com/v1/finance/search?{q}")
             return tuple(n["title"] for n in data.get("news", []) if n.get("title"))
         except Exception:
@@ -151,6 +160,11 @@ class YahooProvider:
         rows = [r for r in self._daily(symbol, d) if r[0] < d][-self.lookback:]
         if not rows:
             raise ValueError(f"No price history for {symbol} before {session}")
+        # The news search API has no historical archive, so a session older
+        # than a couple of days gets no headlines rather than today's news
+        # (which would be look-ahead). The arms' news desks abstain when the
+        # list is empty.
+        recent = dt.date.today() - d <= dt.timedelta(days=2)
         return FactSheet(
             session=session,
             symbol=symbol,
@@ -160,7 +174,7 @@ class YahooProvider:
             closes=tuple(round(r[1], 4) for r in rows),
             volumes=tuple(r[2] for r in rows),
             fundamentals={},
-            headlines=self._headlines(symbol),
+            headlines=self._headlines(symbol) if recent else (),
         )
 
     def realized_close(self, session: str, symbol: str) -> float | None:
